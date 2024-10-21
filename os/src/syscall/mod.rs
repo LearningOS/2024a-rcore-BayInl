@@ -26,14 +26,21 @@ mod process;
 
 use fs::*;
 use process::*;
+use crate::task::add_system_call;
+
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
-    match syscall_id {
-        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
-        SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_YIELD => sys_yield(),
-        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
-        SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
-        _ => panic!("Unsupported syscall_id: {}", syscall_id),
+    match add_system_call(syscall_id) {
+        Ok(sid)=>{
+            match sid {
+                SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
+                SYSCALL_EXIT => sys_exit(args[0] as i32),
+                SYSCALL_YIELD => sys_yield(),
+                SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
+                SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
+                _ => panic!("Unsupported syscall_id: {}", syscall_id),
+            }
+        },
+        Err(e_message)=> panic!("Error message: {}", e_message),
     }
 }
