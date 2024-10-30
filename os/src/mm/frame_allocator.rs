@@ -9,6 +9,7 @@ use core::fmt::{self, Debug, Formatter};
 use lazy_static::*;
 
 /// tracker for physical page frame allocation and deallocation
+#[derive(Clone)]
 pub struct FrameTracker {
     /// physical page number
     pub ppn: PhysPageNum,
@@ -55,6 +56,14 @@ impl StackFrameAllocator {
         self.current = l.0;
         self.end = r.0;
         // trace!("last {} Physical Frames.", self.end - self.current);
+    }
+    /// check if the address space is sufficient
+    pub fn is_addr_space_sufficient(&self, len:usize) -> bool{
+        let _len = PhysAddr::from(len).ceil();
+        if self.current + _len.0 > self.end{
+            return false;
+        }
+        true
     }
 }
 impl FrameAllocator for StackFrameAllocator {

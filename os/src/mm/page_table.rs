@@ -65,6 +65,7 @@ impl PageTableEntry {
 }
 
 /// page table structure
+#[derive(Clone)]
 pub struct PageTable {
     root_ppn: PhysPageNum,
     frames: Vec<FrameTracker>,
@@ -146,6 +147,11 @@ impl PageTable {
     /// get the token from the page table
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
+    }
+    /// check if the vpn in this page table is valid
+    pub fn is_pte_valid(&self, vpn: VirtPageNum) -> bool{
+        let res = self.find_pte(vpn);
+        res.is_some()
     }
 }
 

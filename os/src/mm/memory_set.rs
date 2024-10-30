@@ -34,6 +34,7 @@ lazy_static! {
         Arc::new(unsafe { UPSafeCell::new(MemorySet::new_kernel()) });
 }
 /// address space
+#[derive(Clone)]
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
@@ -262,8 +263,47 @@ impl MemorySet {
             false
         }
     }
+    /// check if the vpn in this memory set is valid
+    pub fn is_pte_valid(&self, vpn: VirtPageNum) -> bool{
+        self.page_table.is_pte_valid(vpn)
+    }
+    /// Remove the area
+    pub fn remove_area(&mut self, start_va: VirtAddr, len: usize) -> bool{
+        let page_len = usize::from(VirtAddr::from(len).ceil()) ;
+
+        let mut is_found = false;
+        let mut index = 0;
+        for area in self.areas.iter_mut(){
+            for vpn in area.vpn_range{
+                if vpn == start_va.floor(){
+                    let mut _len = 0;
+                    let _range = area.vpn_range.clone();
+                    for _ in _range{
+                        _len += 1;
+                    }
+                    if _len < page_len{
+                        println!("this area len {} is less than {}", _len, page_len);
+                        return false;
+                    }
+                    area.unmap(&mut self.page_table);
+                    is_found = true;
+                    break;
+                }
+            }
+            if is_found{
+                break;
+            }
+            index += 1;
+        }
+        self.areas.remove(index);
+        if !is_found{
+            println!("this area is not found");
+        }
+        is_found
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
+#[derive(Clone)]
 pub struct MapArea {
     vpn_range: VPNRange,
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,

@@ -23,6 +23,10 @@ use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+use crate::timer::get_time_us;
+use crate::config::{MAX_SYSCALL_NUM, PAGE_SIZE};
+use alloc::string::String;
+use crate::mm::{VirtAddr,MapPermission};
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -79,6 +83,10 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        if next_task.has_runed == false{
+            next_task.has_runed = true;
+            next_task.start_time = get_time_us();
+        }
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -140,6 +148,10 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].has_runed == false {
+                inner.tasks[next].has_runed = true;
+                inner.tasks[next].start_time = get_time_us();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -151,6 +163,135 @@ impl TaskManager {
             // go back to user mode
         } else {
             panic!("All applications completed!");
+        }
+    }
+
+    /// Get the current task control block
+    fn get_current_task(&self)->TaskControlBlock{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let current_task = &inner.tasks[current];
+        TaskControlBlock{
+            task_cx: TaskContext::zero_init(),
+            heap_bottom:0,
+            task_status: current_task.task_status,
+            start_time: current_task.start_time,
+            sys_calls: current_task.sys_calls,
+            memory_set: current_task.memory_set.clone(),
+            base_size: current_task.base_size,
+            trap_cx_ppn: current_task.trap_cx_ppn,
+            program_brk: current_task.program_brk,
+            has_runed: true,
+        }
+    }
+
+    /// Get the start time of current task
+    fn get_start_time(&self) -> usize{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].start_time
+    }
+
+    /// Get the system call information of current task
+    fn get_system_calls(&self)->[u32;MAX_SYSCALL_NUM]{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].sys_calls.into()
+    }
+
+    /// Add the system call's time
+    fn add_system_calls(&self, scall_id: usize) -> Result<usize, String>{
+        if scall_id > MAX_SYSCALL_NUM {
+            return Err(String::from("The scall_id is out of bound!"));
+        }
+        else{
+            let mut inner = self.inner.exclusive_access();
+            let current = inner.current_task;
+            inner.tasks[current].sys_calls[scall_id] += 1;
+            Ok(scall_id)
+        }
+    }
+
+    /// Map the current task's memory set
+    pub fn mmap_current_area(&self, start: usize, len: usize, port: usize)-> isize{
+        // Check if the start is page aligned
+        if start % PAGE_SIZE != 0 {
+            println!("mmap start address {} is unaligned", start);
+            return -1;
+        }
+        
+        // Check the port is valid
+        if port &(!7)!=0 || port &7 ==0{
+            println!("mmap port {} is invalid", port);
+            return -1;
+        }
+
+        // Check if the start page is already mapped
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        for addr in (start..start+len).step_by(PAGE_SIZE){
+            let vpn = VirtAddr::from(addr).floor();
+            if inner.tasks[current].memory_set.is_pte_valid(vpn){
+                println!("this vpn {} is already mapped, the addr is {:#x}, and the start is {:#x}", vpn.0, addr, start);
+                return -1;
+            }
+        }
+
+        // Check if the memory is enough
+        use crate::mm::FRAME_ALLOCATOR;
+        if !FRAME_ALLOCATOR.exclusive_access().is_addr_space_sufficient(len){
+            println!("this memory is not enough");
+            return -1;
+        }
+
+        // Allocate frames
+        let mut permission = MapPermission::U;
+        if port & 0b001 != 0 {
+            permission |= MapPermission::R;
+        }
+        if port & 0b010 != 0 {
+            permission |= MapPermission::W;
+        }
+        if port & 0b100 != 0 {
+            permission |= MapPermission::X;
+        }
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        inner.tasks[current].memory_set.insert_framed_area(start_va, end_va, permission);
+
+        // Check if the mapping is successful
+        for addr in (start..start+len).step_by(PAGE_SIZE){
+            let vpn = VirtAddr::from(addr).floor();
+            if !inner.tasks[current].memory_set.is_pte_valid(vpn){
+                return -1;
+            }
+        }
+        0
+    }
+
+    /// Unmap the current task's memory set
+    pub fn munmap_current_area(&self, start: usize, len: usize)->isize{
+        if start % PAGE_SIZE != 0 {
+            println!("unmap start address {} is unaligned", start);
+            return -1;
+        }
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+
+        for addr in (start..start+len).step_by(PAGE_SIZE){
+            let vpn = VirtAddr::from(addr).floor();
+            if !inner.tasks[current].memory_set.is_pte_valid(vpn){
+                println!("this vpn {} is not valid", vpn.0);
+                return -1;
+            }
+        }
+        if inner.tasks[current].memory_set.remove_area(VirtAddr::from(start), len){
+            0
+        }
+        else{
+            -1
         }
     }
 }
@@ -201,4 +342,34 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Get the current task control block
+pub fn get_current_task() -> TaskControlBlock{
+    TASK_MANAGER.get_current_task()
+}
+
+/// Add the system call's time
+pub fn add_system_call(scall_id: usize) -> Result<usize, String>{
+    TASK_MANAGER.add_system_calls(scall_id)
+}
+
+/// Get the current task's system calls
+pub fn current_sys_calls() -> [u32;MAX_SYSCALL_NUM]{
+    TASK_MANAGER.get_system_calls()
+}
+
+/// Get the current task's start time
+pub fn current_start_time() -> usize{
+    TASK_MANAGER.get_start_time()
+}
+
+/// Map the current task's memory set
+pub fn mmap_current_area(start: usize, len: usize, port: usize)->isize{
+    TASK_MANAGER.mmap_current_area(start, len, port)
+}
+
+/// Unmap the current task's memory set
+pub fn munmap_current_area(start: usize, len: usize)->isize{
+    TASK_MANAGER.munmap_current_area(start, len)
 }
